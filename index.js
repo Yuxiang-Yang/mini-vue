@@ -7,13 +7,18 @@ function effect(fn, options = {}) {
     cleanup(effectFn)
     activeEffect = effectFn
     effectStack.push(effectFn)
-    fn()
+    const res = fn()
     effectStack.pop()
     activeEffect = effectStack[effectStack.length - 1]
+    return res
   }
   effectFn.options = options
   effectFn.deps = []
-  effectFn()
+
+  if (!options.lazy) {
+    effectFn()
+  }
+  return effectFn
 }
 
 const bucket = new WeakMap()
@@ -26,7 +31,7 @@ const obj = new Proxy(data, {
     target[key] = newVal
     trigger(target, key)
     return true
-  }
+  },
 })
 
 function track(target, key) {
@@ -50,7 +55,7 @@ function trigger(target, key) {
 
   const effects = depsMap.get(key)
   const effectsToRun = new Set()
-  effects.forEach(effect => {
+  effects && effects.forEach(effect => {
     if (effect !== activeEffect) {
       effectsToRun.add(effect)
     }
@@ -65,7 +70,7 @@ function trigger(target, key) {
 }
 
 function cleanup(effectFn) {
-  for (let i = 0; i < effectFn.deps.length; i++){
+  for (let i = 0; i < effectFn.deps.length; i++) {
     const deps = effectFn.deps[i]
     deps.delete(effectFn)
   }
@@ -77,9 +82,8 @@ const p = Promise.resolve()
 
 let isFlushing = false
 function flushJob() {
-  if (isFlushing) {
-    return
-  }
+  if (isFlushing) return
+
   isFlushing = true
   p.then(() => {
     jobQueue.forEach(job => job())
@@ -88,16 +92,75 @@ function flushJob() {
   })
 }
 
-effect(() => {
-  console.log(obj.foo)
-}, {
-  scheduler(fn) {
-    jobQueue.add(fn)
-    flushJob()
+function computed(getter) {
+  let value
+  let dirty = true
+
+  const effectFn = effect(getter, {
+    lazy: true,
+    scheduler() {
+      dirty = true
+      trigger(obj, 'value')
+    },
+  })
+
+  const obj = {
+    get value() {
+      if (dirty) {
+        value = effectFn()
+        dirty = false
+      }
+      track(obj, 'value')
+      return value
+    },
   }
-})
+
+  return obj
+}
+
+function watch(source, cb) {
+  let getter
+  if (typeof source === 'function') {
+    getter = source
+  } else {
+    getter = () => traverse(source)
+  }
+
+  effect(getter, {
+    scheduler() {
+      cb()
+    },
+  })
+}
+
+function traverse(value, seen = new Set()) {
+  if (typeof value !== 'object' || value === null || seen.has(value)) return
+  seen.add(value)
+
+  for (const k in value) {
+    traverse(value[k], seen)
+  }
+
+  return value
+}
+
+watch(() => obj.foo, () => console.log('obj.foo changed'))
+
+// const sumRes = computed(() => obj.foo + obj.bar)
+// effect(() => console.log(sumRes.value))
+// console.log(sumRes.value)
+// obj.foo++
+// console.log(sumRes.value)
+// effect(() => {
+//   console.log(obj.foo)
+// }, {
+//   scheduler(fn) {
+//     jobQueue.add(fn)
+//     flushJob()
+//   }
+// })
 obj.foo++
-obj.foo++
+obj.bar++
 
 // effect(() => {
 //   obj.foo = obj.foo + 1
@@ -116,4 +179,3 @@ obj.foo++
 // }})
 // obj.foo++
 // console.log('end')
-
